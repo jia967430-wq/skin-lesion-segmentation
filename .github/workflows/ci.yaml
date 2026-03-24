@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Run tests
+      run: |
+        python -c "from models import UNet, MambaUNet; print('Models import OK')"
+        python -c "from data.dataset import MedicalSegmentationDataset; print('Dataset import OK')"
+    
+    - name: Check code style
+      run: |
+        pip install black flake8
+        black --check models/ data/ train.py eval.py infer.py || true
+        flake8 models/ data/ --max-line-length=120 || true
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install linting tools
+      run: |
+        pip install black flake8 isort
+    
+    - name: Check formatting
+      run: |
+        isort --check-only --diff models/ data/ train.py eval.py infer.py || true
+        black --check models/ data/ train.py eval.py infer.py || true
