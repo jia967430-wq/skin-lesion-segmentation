@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .unet import DoubleConv
-from .mamba import GatedMLP
+from .cbam import GatedMLP
 
 
 class CBAM(nn.Module):
