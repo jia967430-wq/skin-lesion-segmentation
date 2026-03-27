@@ -21,7 +21,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from models import UNet, AttentionUNet, AttentionUNetLite
+from models import UNet, AttentionUNet, AttentionUNetLite, EnhancedAttentionUNet
 from data.dataset import MedicalSegmentationDataset, get_test_transforms
 
 
@@ -187,6 +187,13 @@ class Evaluator:
                 in_channels=self.config.get('data', {}).get('in_channels', 3),
                 out_channels=self.config.get('data', {}).get('out_channels', 1),
                 base_filters=self.config.get('model', {}).get('base_filters', 32)
+            )
+        elif model_name == 'enhanced_attention_unet':
+            return EnhancedAttentionUNet(
+                in_channels=self.config.get('data', {}).get('in_channels', 3),
+                out_channels=self.config.get('data', {}).get('out_channels', 1),
+                base_filters=self.config.get('model', {}).get('base_filters', 64),
+                deep_supervision=False
             )
         else:
             return UNet(

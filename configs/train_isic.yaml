@@ -15,16 +15,19 @@ model:
   base_filters: 64
 
 training:
-  batch_size: 8
-  epochs: 50
-  learning_rate: 0.0001
+  batch_size: 4
+  epochs: 60
+  learning_rate: 0.0005
   weight_decay: 0.0001
   min_lr: 1e-6
   optimizer: "AdamW"
-  scheduler: "CosineAnnealingLR"
+  scheduler: "CosineAnnealingWarmRestarts"
+  scheduler_T0: 10
+  scheduler_T_mult: 1
   early_stopping_patience: 15
   gradient_clip: 1.0
-  num_workers: 4
+  num_workers: 2
+  label_smoothing: 0.1
 
 # Loss configuration
 loss:
@@ -32,11 +35,17 @@ loss:
   dice_weight: 0.5
   bce_weight: 0.5
 
+augmentation:
+  rotation: 15
+  flip: true
+  zoom: [0.8, 1.2]
+  brightness: 0.1
+  contrast: 0.1
+
 # Logging and checkpointing
 logging:
   log_dir: "logs"
   checkpoint_dir: "checkpoints"
-  save_interval: 5  # Save checkpoint every N epochs
+  save_interval: 5
 
-# Reproducibility
 seed: 42

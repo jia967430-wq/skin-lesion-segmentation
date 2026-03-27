@@ -32,3 +32,6 @@ einops>=0.6.0
 
 # Optional: Experiment tracking
 wandb>=0.15.0
+
+# API serving
+flask>=2.3.0

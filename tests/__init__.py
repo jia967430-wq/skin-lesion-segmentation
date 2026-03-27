@@ -1,0 +1,1 @@
+# Unit tests for skin lesion segmentation project

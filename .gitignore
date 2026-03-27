@@ -84,17 +84,18 @@ venv.bak/
 *~
 
 # Model checkpoints
-checkpoints/*.pth
-checkpoints/*.pt
-checkpoints/*.onnx
-!checkpoints/.gitkeep
-
-# Experiment results
-logs/
-experiments/
-results/
+checkpoints/
 *.pth
 *.pt
+*.onnx
+!saved_models/.gitkeep
+
+# Training logs
+logs/
+
+# Experiment results
+experiments/
+results/
 
 # Data (download separately, see README)
 data/ISIC*/
@@ -102,14 +103,14 @@ data/train/
 data/val/
 data/test/
 *.jpg
+*.jpeg
 *.png
 !data/dataset.py
 !data/.gitkeep
 
-# Images
-samples/
-*.png
-!samples/.gitkeep
+# Demo files
+demo_images/
+demo_results/
 
 # OS
 .DS_Store

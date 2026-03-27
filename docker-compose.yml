@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  inference-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - CHECKPOINT_PATH=/app/saved_models/enhanced_attention_unet_20260326_200212_best.pth
+      - PORT=8000
+    volumes:
+      - ./saved_models:/app/saved_models
+      - ./data:/app/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  inference-api-cpu:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      - CHECKPOINT_PATH=/app/saved_models/enhanced_attention_unet_20260326_200212_best.pth
+      - PORT=8000
+    volumes:
+      - ./saved_models:/app/saved_models
+      - ./data:/app/data
+    restart: unless-stopped

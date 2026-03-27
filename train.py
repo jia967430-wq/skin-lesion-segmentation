@@ -31,7 +31,9 @@ from tqdm import tqdm
 import yaml
 
 from models import UNet, AttentionUNet, AttentionUNetLite
+from models.components.enhanced_attention_unet import EnhancedAttentionUNet
 from models.losses import HybridDiceBCELoss, DiceLoss
+from models.losses_enhanced import DeepSupervisionLoss, CombinedSegLoss
 from data.dataset import MedicalSegmentationDataset, get_train_transforms, get_val_transforms
 
 
@@ -201,10 +203,22 @@ class Trainer:
         logging.info(f"Model: {config['model']['name']}, Parameters: {self.model.get_params():,}")
         
         # Loss
-        self.criterion = HybridDiceBCELoss(
-            dice_weight=config['loss']['dice_weight'],
-            bce_weight=config['loss']['bce_weight']
-        )
+        if config['loss']['name'] == 'DeepSupervisionLoss':
+            self.criterion = DeepSupervisionLoss(
+                dice_weight=config['loss']['dice_weight'],
+                bce_weight=config['loss']['bce_weight']
+            )
+        elif config['loss']['name'] == 'CombinedSegLoss':
+            self.criterion = CombinedSegLoss(
+                dice_weight=config['loss']['dice_weight'],
+                bce_weight=config['loss']['bce_weight'],
+                lovasz_weight=config['loss'].get('lovasz_weight', 0.0)
+            )
+        else:
+            self.criterion = HybridDiceBCELoss(
+                dice_weight=config['loss']['dice_weight'],
+                bce_weight=config['loss']['bce_weight']
+            )
         
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -257,6 +271,12 @@ class Trainer:
                 in_channels=self.config['data']['in_channels'],
                 out_channels=self.config['data']['out_channels'],
                 base_filters=self.config['model'].get('base_filters', 32)
+            ),
+            'enhanced_attention_unet': lambda: EnhancedAttentionUNet(
+                in_channels=self.config['data']['in_channels'],
+                out_channels=self.config['data']['out_channels'],
+                base_filters=self.config['model'].get('base_filters', 64),
+                deep_supervision=self.config['model'].get('deep_supervision', False)
             ),
         }
         
@@ -350,9 +370,14 @@ class Trainer:
             
             self.optimizer.step()
             
-            # Metrics
+            # Metrics - handle deep supervision (list of outputs)
             with torch.no_grad():
-                batch_metrics = calculate_metrics(outputs, masks)
+                if isinstance(outputs, list):
+                    # Use main output for metrics
+                    main_output = outputs[0]
+                else:
+                    main_output = outputs
+                batch_metrics = calculate_metrics(main_output, masks)
             
             total_loss += loss.item()
             for k, v in batch_metrics.items():
@@ -384,7 +409,13 @@ class Trainer:
                 
                 total_loss += loss.item()
                 
-                batch_metrics = calculate_metrics(outputs, masks)
+                # Handle deep supervision (list of outputs)
+                if isinstance(outputs, list):
+                    main_output = outputs[0]
+                else:
+                    main_output = outputs
+                    
+                batch_metrics = calculate_metrics(main_output, masks)
                 for k, v in batch_metrics.items():
                     metrics[k] += v
         
@@ -488,6 +519,7 @@ class Trainer:
 
 def main():
     import argparse
+    import sys
     parser = argparse.ArgumentParser(description='Train medical image segmentation model')
     parser.add_argument('--config', type=str, default='configs/train_isic.yaml',
                         help='Path to config file')
@@ -495,6 +527,8 @@ def main():
                         help='Override model name from config')
     parser.add_argument('--epochs', type=int, default=None,
                         help='Override number of epochs from config')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Resume from checkpoint path')
     args = parser.parse_args()
     
     # Load config
@@ -506,6 +540,8 @@ def main():
         config['model']['name'] = args.model
     if args.epochs:
         config['training']['epochs'] = args.epochs
+    
+    target_epochs = config['training']['epochs']
     
     # Setup logging
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -522,17 +558,46 @@ def main():
         ]
     )
     
-    # Train
-    trainer = Trainer(config)
-    trainer.log_dir = log_dir
-    trainer.writer = SummaryWriter(log_dir / 'tensorboard')
-    
-    best_dice = trainer.train()
-    
-    print(f"\n{'='*60}")
-    print(f"Training Complete!")
-    print(f"Best Dice Score: {best_dice:.4f}")
-    print(f"{'='*60}")
+    try:
+        # Train
+        trainer = Trainer(config)
+        trainer.log_dir = log_dir
+        trainer.writer = SummaryWriter(log_dir / 'tensorboard')
+        
+        # Resume from checkpoint if specified
+        if args.resume:
+            print(f"Resuming from: {args.resume}")
+            logging.info(f"Resuming from checkpoint: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=trainer.device)
+            trainer.model.load_state_dict(checkpoint['model_state_dict'])
+            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            trainer.start_epoch = checkpoint['epoch']
+            trainer.best_dice = checkpoint.get('best_dice', 0)
+            if 'history' in checkpoint:
+                trainer.history = checkpoint['history']
+            print(f"Resumed from epoch {trainer.start_epoch}, best_dice: {trainer.best_dice:.4f}")
+            logging.info(f"Resumed from epoch {trainer.start_epoch}, best_dice: {trainer.best_dice:.4f}")
+        
+        best_dice = trainer.train()
+        
+        # Check if training completed all epochs
+        completed_epochs = len(trainer.history['train_loss'])
+        if completed_epochs < target_epochs - trainer.start_epoch:
+            logging.error(f"Training incomplete: {completed_epochs}/{target_epochs - trainer.start_epoch} epochs")
+            print(f"\nTraining incomplete: {completed_epochs} epochs completed")
+            sys.exit(1)
+        
+        print(f"\n{'='*60}")
+        print(f"Training Complete!")
+        print(f"Best Dice Score: {best_dice:.4f}")
+        print(f"{'='*60}")
+        
+    except Exception as e:
+        logging.error(f"Training failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == '__main__':

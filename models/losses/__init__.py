@@ -36,6 +36,7 @@ class HybridDiceBCELoss(nn.Module):
         
     def forward(self, pred, target):
         pred = pred.squeeze(1)
+        target = target.squeeze(1)
         dice_loss = self.dice(pred, target)
         bce_loss = self.bce(pred, target.float())
         
