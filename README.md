@@ -40,10 +40,15 @@ pip install -r requirements.txt
 
 ## Dataset
 
-Download the ISIC 2018 dataset and organize it as follows:
+Download the ISIC 2018 dataset from the official website:
+
+- **ISIC Archive**: https://www.isic-archive.com/
+- **Download**: https://www.isic-archive.com/#top
+
+Organize the dataset as follows:
 
 ```
-D:/medseg-data/ISIC2018/
+ISIC2018/
 ├── train/
 │   ├── images/
 │   └── masks/
