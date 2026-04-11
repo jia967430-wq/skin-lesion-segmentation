@@ -2,6 +2,15 @@
 
 Skin lesion segmentation using Enhanced Attention UNet for the ISIC 2018 challenge.
 
+## Quick Reviewer View
+
+If you are reviewing this project in 2-3 minutes, check these first:
+
+1. `README.md` (scope + reported metrics)
+2. `docs/TRAINING_ARTIFACTS.md` (how logs/results are generated and published)
+3. `eval.py` (quantitative evaluation + per-sample export)
+4. `infer.py` (practical inference and qualitative overlays)
+
 ## Model Performance
 
 | Model | Parameters | Validation Dice | Test Dice (avg) |
@@ -83,6 +92,23 @@ python eval.py --checkpoint saved_models/enhanced_attention_unet_best.pth
 The model achieves:
 - **Validation Dice**: 0.9045
 - **Average Test Dice**: 0.9648 (on 10 random test images)
+
+## Training/Evaluation Artifact Policy
+
+To help advisors inspect experiment process (not just final numbers), this repo supports publishing curated artifacts:
+
+- training log (`train.log`)
+- evaluation summary JSON
+- per-sample metrics CSV
+- representative visualization PNGs
+
+See `docs/TRAINING_ARTIFACTS.md` for the exact workflow.
+
+Use helper script to generate an artifact index once logs/results exist:
+
+```bash
+python publish_artifacts.py
+```
 
 ## Citation
 
