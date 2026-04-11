@@ -1,8 +1,9 @@
 {
-  "generated_at": "2026-04-11T18:55:07",
-  "train_log": null,
-  "evaluation_summary": null,
-  "per_sample_csv": null,
+  "generated_at": "2026-04-12T00:37:24",
+  "train_log": "logs\\enhanced_attention_unet\\20260411_200313\\train.log",
+  "evaluation_dir": "results\\compare_old_on_test",
+  "evaluation_summary": "results\\compare_old_on_test\\evaluation_summary_20260411_223457.json",
+  "per_sample_csv": "results\\compare_old_on_test\\per_sample_results_20260411_223457.csv",
   "visualizations_count": 0,
   "visualizations_examples": []
 }

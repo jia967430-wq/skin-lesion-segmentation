@@ -80,8 +80,11 @@ class DeepSupervisionLoss(nn.Module):
             # Deep supervision
             total_loss = 0
             for i, (out, weight) in enumerate(zip(outputs, self.ds_weights)):
-                dice = self.dice_loss(out, target)
-                bce = self.bce_loss(out, target)
+                target_i = target
+                if out.shape[-2:] != target.shape[-2:]:
+                    target_i = F.interpolate(target.float(), size=out.shape[-2:], mode='nearest')
+                dice = self.dice_loss(out, target_i)
+                bce = self.bce_loss(out, target_i)
                 total_loss += weight * (self.dice_weight * dice + self.bce_weight * bce)
             return total_loss
         else:

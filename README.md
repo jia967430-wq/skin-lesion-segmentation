@@ -11,11 +11,14 @@ If you are reviewing this project in 2-3 minutes, check these first:
 3. `eval.py` (quantitative evaluation + per-sample export)
 4. `infer.py` (practical inference and qualitative overlays)
 
-## Model Performance
+## Model Performance (Curated for Review)
 
-| Model | Parameters | Validation Dice | Test Dice (avg) |
-|-------|------------|-----------------|-----------------|
-| EnhancedAttentionUNet | 33M | 0.9045 | 0.9648 |
+The current published result uses the earliest stable 40-epoch run from today (`20260411_200313`, checkpoint epoch 40).
+
+| Split | Dice | IoU | HD95 |
+|-------|------|-----|------|
+| Official Validation | 0.8774 | 0.8089 | 17.4679 |
+| Test | 0.8796 | 0.8116 | 17.6414 |
 
 ## Project Structure
 
@@ -89,9 +92,12 @@ python eval.py --checkpoint saved_models/enhanced_attention_unet_best.pth
 
 ## Results
 
-The model achieves:
-- **Validation Dice**: 0.9045
-- **Average Test Dice**: 0.9648 (on 10 random test images)
+Published artifact paths for advisor review:
+- `logs/enhanced_attention_unet/20260411_200313/train.log`
+- `logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_history.csv`
+- `logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_curves.png`
+- `results/compare_old_on_official_val/evaluation_summary_20260411_222522.json`
+- `results/compare_old_on_test/evaluation_summary_20260411_223457.json`
 
 ## Training/Evaluation Artifact Policy
 
@@ -109,6 +115,13 @@ Use helper script to generate an artifact index once logs/results exist:
 ```bash
 python publish_artifacts.py
 ```
+
+## Why HD95 may look worse while Dice improves
+
+- Dice measures overlap and can improve steadily even when boundary outliers remain.
+- HD95 is sensitive to boundary outliers; a few hard samples can keep it high.
+- In this project, HD95 is logged every validation epoch and sampled in training batches.
+- Use both metrics together when judging run quality.
 
 ## Citation
 

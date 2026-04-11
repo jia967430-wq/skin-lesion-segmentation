@@ -15,6 +15,7 @@ import os
 import sys
 import random
 import logging
+import csv
 from datetime import datetime
 from pathlib import Path
 
@@ -25,10 +26,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import yaml
+import matplotlib.pyplot as plt
 
 from models import UNet, AttentionUNet, AttentionUNetLite
 from models.components.enhanced_attention_unet import EnhancedAttentionUNet
@@ -37,17 +40,18 @@ from models.losses_enhanced import DeepSupervisionLoss, CombinedSegLoss
 from data.dataset import MedicalSegmentationDataset, get_train_transforms, get_val_transforms
 
 
-def set_seed(seed=42):
-    """Set random seed for reproducibility"""
+def set_seed(seed=42, deterministic=True):
+    """Set random seed. Deterministic mode is optional for speed."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = bool(deterministic)
+    torch.backends.cudnn.benchmark = not bool(deterministic)
     os.environ['PYTHONHASHSEED'] = str(seed)
-    print(f"[INFO] Random seed set to {seed}")
+    mode = "deterministic" if deterministic else "fast"
+    print(f"[INFO] Random seed set to {seed} ({mode} mode)")
 
 
 def setup_logging(log_dir):
@@ -132,14 +136,62 @@ def calculate_metrics(pred, target, threshold=0.5, smooth=1e-6):
     correct = (pred_binary == target_binary).sum()
     accuracy = correct / target_binary.numel()
     
+    hd95 = calculate_hd95(pred, target, threshold=threshold)
+
     return {
         'dice': dice.item(),
         'iou': iou.item(),
         'precision': precision.item(),
         'recall': recall.item(),
         'f1': f1.item(),
-        'accuracy': accuracy.item()
+        'accuracy': accuracy.item(),
+        'hd95': hd95,
     }
+
+
+def calculate_hd95(pred, target, threshold=0.5):
+    """Approximate HD95 in pixels for 2D masks."""
+    from scipy.ndimage import binary_erosion, distance_transform_edt
+
+    try:
+        pred = torch.sigmoid(pred).detach().float()
+        target = target.detach().float()
+
+        if pred.dim() == 4:
+            pred = pred.squeeze(1)
+        if target.dim() == 4:
+            target = target.squeeze(1)
+
+        pred_b = (pred > threshold).cpu().numpy().astype(np.uint8).astype(bool)
+        tgt_b = (target > 0.5).cpu().numpy().astype(np.uint8).astype(bool)
+
+        vals = []
+        for p, g in zip(pred_b, tgt_b):
+            h, w = p.shape[-2], p.shape[-1]
+            max_dist = float(np.hypot(h, w))
+            if (not p.any()) and (not g.any()):
+                vals.append(0.0)
+                continue
+            if (not p.any()) or (not g.any()):
+                vals.append(max_dist)
+                continue
+
+            p_s = p ^ binary_erosion(p)
+            g_s = g ^ binary_erosion(g)
+
+            d_g = distance_transform_edt(~g_s)
+            d_p = distance_transform_edt(~p_s)
+            d1 = d_g[p_s]
+            d2 = d_p[g_s]
+            all_d = np.concatenate([d1, d2]) if d1.size and d2.size else np.concatenate([d1, d2, np.array([0.0])])
+            vals.append(float(np.percentile(all_d, 95)))
+
+        finite = [v for v in vals if np.isfinite(v)]
+        if not finite:
+            return float('nan')
+        return float(np.mean(finite))
+    except Exception:
+        return float('nan')
 
 
 class EarlyStopping:
@@ -183,12 +235,26 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.use_amp = bool(config.get('training', {}).get('use_amp', True) and self.device.type == 'cuda')
+        self.use_channels_last = bool(config.get('training', {}).get('channels_last', True) and self.device.type == 'cuda')
+        self.hd95_train_every = int(config.get('training', {}).get('hd95_train_every', 0))
+        self.hd95_val_every = int(config.get('training', {}).get('hd95_val_every', 1))
+        self.scaler = GradScaler(enabled=self.use_amp)
         
         # Setup
-        set_seed(config.get('seed', 42))
-        self.log_dir = Path(config.get('log_dir', 'logs'))
+        train_cfg = config.get('training', {})
+        set_seed(config.get('seed', 42), deterministic=train_cfg.get('deterministic', False))
+        if self.device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            try:
+                torch.set_float32_matmul_precision('high')
+            except Exception:
+                pass
+        log_cfg = config.get('logging', {})
+        self.log_dir = Path(log_cfg.get('log_dir', config.get('log_dir', 'logs')))
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_dir = Path(config.get('checkpoint_dir', 'checkpoints'))
+        self.checkpoint_dir = Path(log_cfg.get('checkpoint_dir', config.get('checkpoint_dir', 'checkpoints')))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         # Logging
@@ -200,6 +266,8 @@ class Trainer:
         # Model
         self.model = self._create_model()
         self.model = self.model.to(self.device)
+        if self.use_channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
         logging.info(f"Model: {config['model']['name']}, Parameters: {self.model.get_params():,}")
         
         # Loss
@@ -228,11 +296,20 @@ class Trainer:
         )
         
         # Scheduler
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=config['training']['epochs'],
-            eta_min=float(config['training'].get('min_lr', 1e-6))
-        )
+        sch = config['training'].get('scheduler', 'CosineAnnealingLR')
+        if sch == 'CosineAnnealingWarmRestarts':
+            self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=int(config['training'].get('scheduler_T0', 10)),
+                T_mult=int(config['training'].get('scheduler_T_mult', 1)),
+                eta_min=float(config['training'].get('min_lr', 1e-6)),
+            )
+        else:
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=config['training']['epochs'],
+                eta_min=float(config['training'].get('min_lr', 1e-6))
+            )
         
         # Data
         self.train_loader, self.val_loader = self._create_dataloaders()
@@ -245,8 +322,8 @@ class Trainer:
         
         # Training history
         self.history = {
-            'train_loss': [], 'train_dice': [], 'train_iou': [],
-            'val_loss': [], 'val_dice': [], 'val_iou': []
+            'train_loss': [], 'train_dice': [], 'train_iou': [], 'train_hd95': [],
+            'val_loss': [], 'val_dice': [], 'val_iou': [], 'val_hd95': []
         }
         
         self.best_dice = 0.0
@@ -296,40 +373,60 @@ class Trainer:
         )
         val_transform = get_val_transforms(tuple(data_config['image_size']))
         
-        full_dataset = MedicalSegmentationDataset(
-            root_dir=data_config['root_dir'],
-            split='train',
-            transform=train_transform,
-            image_size=tuple(data_config['image_size'])
-        )
-        
-        # Split into train/val
-        total_samples = len(full_dataset)
-        val_size = int(total_samples * data_config.get('val_split', 0.2))
-        train_size = total_samples - val_size
-        
-        indices = list(range(total_samples))
-        random.shuffle(indices)
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size:]
-        
-        train_dataset = Subset(full_dataset, train_indices)
-        val_dataset = Subset(
-            MedicalSegmentationDataset(
+        root_dir = Path(data_config['root_dir'])
+        if (root_dir / 'train' / 'images').exists() and (root_dir / 'val' / 'images').exists():
+            train_dataset = MedicalSegmentationDataset(
                 root_dir=data_config['root_dir'],
                 split='train',
+                transform=train_transform,
+                image_size=tuple(data_config['image_size'])
+            )
+            val_dataset = MedicalSegmentationDataset(
+                root_dir=data_config['root_dir'],
+                split='val',
                 transform=val_transform,
                 image_size=tuple(data_config['image_size'])
-            ),
-            val_indices
-        )
+            )
+            train_size = len(train_dataset)
+            val_size = len(val_dataset)
+            total_samples = train_size + val_size
+        else:
+            full_dataset = MedicalSegmentationDataset(
+                root_dir=data_config['root_dir'],
+                split='train',
+                transform=train_transform,
+                image_size=tuple(data_config['image_size'])
+            )
+
+            total_samples = len(full_dataset)
+            val_size = int(total_samples * data_config.get('val_split', 0.2))
+            train_size = total_samples - val_size
+
+            indices = list(range(total_samples))
+            random.shuffle(indices)
+            train_indices = indices[:train_size]
+            val_indices = indices[train_size:]
+
+            train_dataset = Subset(full_dataset, train_indices)
+            val_dataset = Subset(
+                MedicalSegmentationDataset(
+                    root_dir=data_config['root_dir'],
+                    split='train',
+                    transform=val_transform,
+                    image_size=tuple(data_config['image_size'])
+                ),
+                val_indices
+            )
         
         train_loader = DataLoader(
             train_dataset,
             batch_size=train_config['batch_size'],
             shuffle=True,
             num_workers=train_config.get('num_workers', 4),
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=bool(train_config.get('num_workers', 4) > 0),
+            prefetch_factor=int(train_config.get('prefetch_factor', 2)) if train_config.get('num_workers', 4) > 0 else None,
+            drop_last=True,
         )
         
         val_loader = DataLoader(
@@ -337,7 +434,9 @@ class Trainer:
             batch_size=train_config['batch_size'],
             shuffle=False,
             num_workers=train_config.get('num_workers', 4),
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=bool(train_config.get('num_workers', 4) > 0),
+            prefetch_factor=int(train_config.get('prefetch_factor', 2)) if train_config.get('num_workers', 4) > 0 else None,
         )
         
         logging.info(f"Dataset: {total_samples} samples (Train: {train_size}, Val: {val_size})")
@@ -348,27 +447,33 @@ class Trainer:
         """Train for one epoch"""
         self.model.train()
         total_loss = 0
-        metrics = {'dice': 0, 'iou': 0, 'precision': 0, 'recall': 0, 'f1': 0, 'accuracy': 0}
+        metrics = {'dice': 0, 'iou': 0, 'precision': 0, 'recall': 0, 'f1': 0, 'accuracy': 0, 'hd95': 0}
+        counts = {k: 0 for k in metrics}
         
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}')
         for batch_idx, batch in enumerate(pbar):
-            images = batch['image'].to(self.device)
-            masks = batch['mask'].to(self.device)
+            images = batch['image'].to(self.device, non_blocking=True)
+            masks = batch['mask'].to(self.device, non_blocking=True)
+            if self.use_channels_last:
+                images = images.contiguous(memory_format=torch.channels_last)
             
-            self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = self.criterion(outputs, masks)
-            
-            loss.backward()
-            
+            self.optimizer.zero_grad(set_to_none=True)
+            with autocast(enabled=self.use_amp):
+                outputs = self.model(images)
+                loss = self.criterion(outputs, masks)
+
+            self.scaler.scale(loss).backward()
+
             # Gradient clipping
             if self.config['training'].get('gradient_clip', 0) > 0:
+                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.config['training']['gradient_clip']
                 )
-            
-            self.optimizer.step()
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             
             # Metrics - handle deep supervision (list of outputs)
             with torch.no_grad():
@@ -378,10 +483,14 @@ class Trainer:
                 else:
                     main_output = outputs
                 batch_metrics = calculate_metrics(main_output, masks)
+                if self.hd95_train_every <= 0 or (batch_idx % self.hd95_train_every != 0):
+                    batch_metrics['hd95'] = float('nan')
             
             total_loss += loss.item()
             for k, v in batch_metrics.items():
-                metrics[k] += v
+                if np.isfinite(v):
+                    metrics[k] += v
+                    counts[k] += 1
             
             pbar.set_postfix({
                 'loss': f'{loss.item():.4f}',
@@ -389,7 +498,10 @@ class Trainer:
             })
         
         avg_loss = total_loss / len(self.train_loader)
-        avg_metrics = {k: v / len(self.train_loader) for k, v in metrics.items()}
+        avg_metrics = {
+            k: (metrics[k] / counts[k] if counts[k] > 0 else float('nan'))
+            for k in metrics
+        }
         
         return avg_loss, avg_metrics
     
@@ -397,15 +509,19 @@ class Trainer:
         """Validate model"""
         self.model.eval()
         total_loss = 0
-        metrics = {'dice': 0, 'iou': 0, 'precision': 0, 'recall': 0, 'f1': 0, 'accuracy': 0}
+        metrics = {'dice': 0, 'iou': 0, 'precision': 0, 'recall': 0, 'f1': 0, 'accuracy': 0, 'hd95': 0}
+        counts = {k: 0 for k in metrics}
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc='Validation'):
-                images = batch['image'].to(self.device)
-                masks = batch['mask'].to(self.device)
-                
-                outputs = self.model(images)
-                loss = self.criterion(outputs, masks)
+                images = batch['image'].to(self.device, non_blocking=True)
+                masks = batch['mask'].to(self.device, non_blocking=True)
+                if self.use_channels_last:
+                    images = images.contiguous(memory_format=torch.channels_last)
+
+                with autocast(enabled=self.use_amp):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, masks)
                 
                 total_loss += loss.item()
                 
@@ -416,11 +532,20 @@ class Trainer:
                     main_output = outputs
                     
                 batch_metrics = calculate_metrics(main_output, masks)
+                if self.hd95_val_every > 0 and (epoch % self.hd95_val_every == 0):
+                    pass
+                else:
+                    batch_metrics['hd95'] = float('nan')
                 for k, v in batch_metrics.items():
-                    metrics[k] += v
+                    if np.isfinite(v):
+                        metrics[k] += v
+                        counts[k] += 1
         
         avg_loss = total_loss / len(self.val_loader)
-        avg_metrics = {k: v / len(self.val_loader) for k, v in metrics.items()}
+        avg_metrics = {
+            k: (metrics[k] / counts[k] if counts[k] > 0 else float('nan'))
+            for k in metrics
+        }
         
         return avg_loss, avg_metrics
     
@@ -445,6 +570,20 @@ class Trainer:
             best_path = self.checkpoint_dir / f'{self.experiment_name}_best.pth'
             torch.save(checkpoint, best_path)
             logging.info(f"Saved best model with Dice: {self.best_dice:.4f}")
+
+        # Keep only latest N epoch checkpoints to control disk usage
+        keep_n = int(self.config.get('training', {}).get('keep_last_checkpoints', 2))
+        if keep_n > 0:
+            epoch_ckpts = sorted(
+                self.checkpoint_dir.glob(f'{self.experiment_name}_epoch_*.pth'),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old_ckpt in epoch_ckpts[keep_n:]:
+                try:
+                    old_ckpt.unlink()
+                except Exception:
+                    pass
         
         return checkpoint_path
     
@@ -472,17 +611,19 @@ class Trainer:
             self.history['train_loss'].append(train_loss)
             self.history['train_dice'].append(train_metrics['dice'])
             self.history['train_iou'].append(train_metrics['iou'])
+            self.history['train_hd95'].append(train_metrics['hd95'])
             self.history['val_loss'].append(val_loss)
             self.history['val_dice'].append(val_metrics['dice'])
             self.history['val_iou'].append(val_metrics['iou'])
+            self.history['val_hd95'].append(val_metrics['hd95'])
             
             # Logging
             logging.info(f"\nTrain Loss: {train_loss:.4f}")
             logging.info(f"Train - Dice: {train_metrics['dice']:.4f}, IoU: {train_metrics['iou']:.4f}, "
-                        f"F1: {train_metrics['f1']:.4f}")
+                        f"F1: {train_metrics['f1']:.4f}, HD95: {train_metrics['hd95']:.3f}")
             logging.info(f"Val Loss: {val_loss:.4f}")
             logging.info(f"Val - Dice: {val_metrics['dice']:.4f}, IoU: {val_metrics['iou']:.4f}, "
-                        f"F1: {val_metrics['f1']:.4f}")
+                        f"F1: {val_metrics['f1']:.4f}, HD95: {val_metrics['hd95']:.3f}")
             
             # TensorBoard
             self.writer.add_scalar('Loss/train', train_loss, epoch)
@@ -491,6 +632,8 @@ class Trainer:
             self.writer.add_scalar('Metrics/Dice_val', val_metrics['dice'], epoch)
             self.writer.add_scalar('Metrics/IoU_train', train_metrics['iou'], epoch)
             self.writer.add_scalar('Metrics/IoU_val', val_metrics['iou'], epoch)
+            self.writer.add_scalar('Metrics/HD95_train', train_metrics['hd95'], epoch)
+            self.writer.add_scalar('Metrics/HD95_val', val_metrics['hd95'], epoch)
             self.writer.add_scalar('LR', self.scheduler.get_last_lr()[0], epoch)
             
             # Save checkpoint
@@ -513,6 +656,50 @@ class Trainer:
         with open(history_path, 'w') as f:
             json.dump(self.history, f, indent=2)
         logging.info(f"Training history saved to {history_path}")
+
+        # Save training history csv
+        csv_path = self.log_dir / f'{self.experiment_name}_history.csv'
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['epoch', 'train_loss', 'train_dice', 'train_iou', 'train_hd95', 'val_loss', 'val_dice', 'val_iou', 'val_hd95'])
+            n = len(self.history['train_loss'])
+            for i in range(n):
+                writer.writerow([
+                    i + 1,
+                    self.history['train_loss'][i],
+                    self.history['train_dice'][i],
+                    self.history['train_iou'][i],
+                    self.history['train_hd95'][i],
+                    self.history['val_loss'][i],
+                    self.history['val_dice'][i],
+                    self.history['val_iou'][i],
+                    self.history['val_hd95'][i],
+                ])
+        logging.info(f"Training history csv saved to {csv_path}")
+
+        # Save simple curves plot
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+        epochs_idx = list(range(1, len(self.history['train_loss']) + 1))
+        axes[0].plot(epochs_idx, self.history['train_loss'], label='train_loss')
+        axes[0].plot(epochs_idx, self.history['val_loss'], label='val_loss')
+        axes[0].set_title('Loss')
+        axes[0].set_xlabel('Epoch')
+        axes[0].legend()
+        axes[1].plot(epochs_idx, self.history['train_dice'], label='train_dice')
+        axes[1].plot(epochs_idx, self.history['val_dice'], label='val_dice')
+        axes[1].set_title('Dice')
+        axes[1].set_xlabel('Epoch')
+        axes[1].legend()
+        axes[2].plot(epochs_idx, self.history['train_hd95'], label='train_hd95')
+        axes[2].plot(epochs_idx, self.history['val_hd95'], label='val_hd95')
+        axes[2].set_title('HD95 (px)')
+        axes[2].set_xlabel('Epoch')
+        axes[2].legend()
+        fig.tight_layout()
+        curve_path = self.log_dir / f'{self.experiment_name}_curves.png'
+        fig.savefig(curve_path, dpi=150)
+        plt.close(fig)
+        logging.info(f"Training curves saved to {curve_path}")
         
         return self.best_dice
 
@@ -545,8 +732,11 @@ def main():
     
     # Setup logging
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_dir = Path('logs') / config['model']['name'] / timestamp
+    base_log_dir = Path(config.get('logging', {}).get('log_dir', 'logs'))
+    log_dir = base_log_dir / config['model']['name'] / timestamp
     log_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = Path(config.get('logging', {}).get('checkpoint_dir', 'checkpoints')) / config['model']['name'] / timestamp
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     import logging
     logging.basicConfig(
@@ -562,6 +752,7 @@ def main():
         # Train
         trainer = Trainer(config)
         trainer.log_dir = log_dir
+        trainer.checkpoint_dir = checkpoint_dir
         trainer.writer = SummaryWriter(log_dir / 'tensorboard')
         
         # Resume from checkpoint if specified

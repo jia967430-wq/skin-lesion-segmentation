@@ -91,11 +91,25 @@ checkpoints/
 !saved_models/.gitkeep
 
 # Training logs
-logs/
+logs/**
+!logs/
+!logs/enhanced_attention_unet/
+!logs/enhanced_attention_unet/20260411_200313/
+!logs/enhanced_attention_unet/20260411_200313/train.log
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_history.csv
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_history.json
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_curves.png
 
 # Experiment results
 experiments/
-results/
+results/**
+!results/
+!results/compare_old_on_official_val/
+!results/compare_old_on_official_val/evaluation_summary_20260411_222522.json
+!results/compare_old_on_official_val/per_sample_results_20260411_222522.csv
+!results/compare_old_on_test/
+!results/compare_old_on_test/evaluation_summary_20260411_223457.json
+!results/compare_old_on_test/per_sample_results_20260411_223457.csv
 
 # Data (download separately, see README)
 data/ISIC*/
@@ -119,3 +133,13 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.log
+
+# Curated advisor artifacts (old 40-epoch run)
+!logs/enhanced_attention_unet/20260411_200313/train.log
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_history.csv
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_history.json
+!logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_curves.png
+!results/compare_old_on_official_val/evaluation_summary_20260411_222522.json
+!results/compare_old_on_official_val/per_sample_results_20260411_222522.csv
+!results/compare_old_on_test/evaluation_summary_20260411_223457.json
+!results/compare_old_on_test/per_sample_results_20260411_223457.csv

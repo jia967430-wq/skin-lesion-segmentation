@@ -164,12 +164,17 @@ class MedicalSegmentationDataset(Dataset):
         img_name = self.image_files[idx]
         img_path = self.image_dir / img_name
         mask_path = self._get_mask_path(img_name)
-        
-        # Load image
-        image = np.array(Image.open(img_path).convert('RGB'))
-        
-        # Load mask
-        mask = np.array(Image.open(mask_path).convert('L'))
+
+        target_size = tuple(self.image_size)
+
+        # Load and downscale before numpy conversion to reduce RAM spikes
+        with Image.open(img_path) as im:
+            im = im.convert('RGB').resize(target_size, Image.BILINEAR)
+            image = np.asarray(im, dtype=np.uint8)
+
+        with Image.open(mask_path) as mm:
+            mm = mm.convert('L').resize(target_size, Image.NEAREST)
+            mask = np.asarray(mm, dtype=np.uint8)
         
         # Binarize mask if needed
         if mask.max() > 1:

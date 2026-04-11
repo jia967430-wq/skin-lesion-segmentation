@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from scipy.ndimage import binary_erosion, distance_transform_edt
 
 from models import UNet, AttentionUNet, AttentionUNetLite, EnhancedAttentionUNet
 from data.dataset import MedicalSegmentationDataset, get_test_transforms
@@ -74,6 +75,38 @@ def calculate_metrics(pred, target, threshold=0.5, smooth=1e-6):
         'f1': f1.item(),
         'accuracy': accuracy.item()
     }
+
+
+def calculate_hd95(pred, target, threshold=0.5):
+    pred = pred.float()
+    target = target.float()
+    if pred.dim() == 4:
+        pred = pred.squeeze(1)
+    if target.dim() == 4:
+        target = target.squeeze(1)
+
+    pred_b = (pred > threshold).cpu().numpy().astype(bool)
+    tgt_b = (target > 0.5).cpu().numpy().astype(bool)
+    vals = []
+    for p, g in zip(pred_b, tgt_b):
+        h, w = p.shape[-2], p.shape[-1]
+        max_dist = float(np.hypot(h, w))
+        if (not p.any()) and (not g.any()):
+            vals.append(0.0)
+            continue
+        if (not p.any()) or (not g.any()):
+            vals.append(max_dist)
+            continue
+        p_s = p ^ binary_erosion(p)
+        g_s = g ^ binary_erosion(g)
+        d_g = distance_transform_edt(~g_s)
+        d_p = distance_transform_edt(~p_s)
+        all_d = np.concatenate([d_g[p_s], d_p[g_s]])
+        vals.append(float(np.percentile(all_d, 95)))
+    finite = [v for v in vals if np.isfinite(v)]
+    if not finite:
+        return float('nan')
+    return float(np.mean(finite))
 
 
 def find_optimal_threshold(preds, targets, thresholds=None):
@@ -193,7 +226,7 @@ class Evaluator:
                 in_channels=self.config.get('data', {}).get('in_channels', 3),
                 out_channels=self.config.get('data', {}).get('out_channels', 1),
                 base_filters=self.config.get('model', {}).get('base_filters', 64),
-                deep_supervision=False
+                deep_supervision=self.config.get('model', {}).get('deep_supervision', False)
             )
         else:
             return UNet(
@@ -247,6 +280,7 @@ class Evaluator:
                 
                 # Calculate metrics
                 metrics = calculate_metrics(preds.squeeze(), masks.squeeze())
+                metrics['hd95'] = calculate_hd95(preds, masks)
                 all_metrics.append(metrics)
                 
                 per_sample_results.append({
@@ -280,13 +314,15 @@ class Evaluator:
             all_metrics = []
             for pred, target in zip(all_preds, all_targets):
                 metrics = calculate_metrics(pred, target, threshold=best_thresh)
+                metrics['hd95'] = calculate_hd95(pred.unsqueeze(0), target.unsqueeze(0), threshold=best_thresh)
                 all_metrics.append(metrics)
             
             per_sample_results = []
             for idx, (pred, target) in enumerate(zip(all_preds, all_targets)):
                 metrics = calculate_metrics(pred, target, threshold=best_thresh)
+                metrics['hd95'] = calculate_hd95(pred.unsqueeze(0), target.unsqueeze(0), threshold=best_thresh)
                 per_sample_results.append({
-                    'filename': dataset.get_filename(idx),
+                    'filename': dataset.image_files[idx],
                     **metrics
                 })
         
@@ -324,10 +360,10 @@ class Evaluator:
         
         # Save per-sample results
         with open(output_dir / f'per_sample_results_{timestamp}.csv', 'w') as f:
-            f.write('filename,dice,iou,precision,recall,f1,accuracy\n')
+            f.write('filename,dice,iou,precision,recall,f1,accuracy,hd95\n')
             for r in results[2]:
                 f.write(f"{r['filename']},{r['dice']:.4f},{r['iou']:.4f},"
-                        f"{r['precision']:.4f},{r['recall']:.4f},{r['f1']:.4f},{r['accuracy']:.4f}\n")
+                        f"{r['precision']:.4f},{r['recall']:.4f},{r['f1']:.4f},{r['accuracy']:.4f},{r['hd95']:.4f}\n")
         
         return output_dir
 

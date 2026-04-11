@@ -1,0 +1,55 @@
+# Tonight run (balanced quality/speed for RTX 4070 SUPER)
+
+data:
+  root_dir: "D:/medseg-data/ISIC2018"
+  image_size: [224, 224]
+  in_channels: 3
+  out_channels: 1
+  val_split: 0.2
+  augmentation: true
+
+model:
+  name: "enhanced_attention_unet"
+  base_filters: 64
+  deep_supervision: true
+
+training:
+  batch_size: 24
+  epochs: 70
+  learning_rate: 0.0005
+  weight_decay: 0.0001
+  min_lr: 1e-6
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingWarmRestarts"
+  scheduler_T0: 8
+  scheduler_T_mult: 1
+  early_stopping_patience: 8
+  gradient_clip: 1.0
+  num_workers: 4
+  prefetch_factor: 1
+  deterministic: false
+  use_amp: true
+  channels_last: false
+  hd95_train_every: 200
+  hd95_val_every: 1
+  keep_last_checkpoints: 2
+  label_smoothing: 0.0
+
+loss:
+  name: "DeepSupervisionLoss"
+  dice_weight: 0.6
+  bce_weight: 0.4
+
+augmentation:
+  rotation: 15
+  flip: true
+  zoom: [0.8, 1.2]
+  brightness: 0.1
+  contrast: 0.1
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  save_interval: 1
+
+seed: 42
