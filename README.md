@@ -15,10 +15,16 @@ If you are reviewing this project in 2-3 minutes, check these first:
 
 The current published result uses the earliest stable 40-epoch run from today (`20260411_200313`, checkpoint epoch 40).
 
+These are dataset-level averages from full split evaluation (not cherry-picked single images):
+
 | Split | Dice | IoU | HD95 |
 |-------|------|-----|------|
 | Official Validation | 0.8774 | 0.8089 | 17.4679 |
 | Test | 0.8796 | 0.8116 | 17.6414 |
+
+Std (test split): Dice `0.1666`, HD95 `42.8784`.
+
+Note for reviewers: earlier high numbers like `0.9648` came from individual sample rows in per-sample CSV, not overall test mean.
 
 ## Project Structure
 
@@ -98,6 +104,8 @@ Published artifact paths for advisor review:
 - `logs/enhanced_attention_unet/20260411_200313/enhanced_attention_unet_20260411_200313_curves.png`
 - `results/compare_old_on_official_val/evaluation_summary_20260411_222522.json`
 - `results/compare_old_on_test/evaluation_summary_20260411_223457.json`
+
+This project reports conservative, reproducible metrics and keeps Dice + HD95 together to avoid over-claiming quality.
 
 ## Training/Evaluation Artifact Policy
 
