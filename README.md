@@ -20,7 +20,7 @@ These are dataset-level averages from full split evaluation (not cherry-picked s
 | Split | Dice | IoU | HD95 |
 |-------|------|-----|------|
 | Official Validation | 0.9075 | 0.8318 | 12.150 |
-| Test | 0.8796 | 0.8116 | 17.6414 |
+| Test | 0.8820 | 0.8155 | 16.7736 |
 
 Std (test split): Dice `0.1666`, HD95 `42.8784`.
 
