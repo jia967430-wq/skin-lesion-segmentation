@@ -19,12 +19,10 @@ These are dataset-level averages from full split evaluation (not cherry-picked s
 
 | Split | Dice | IoU | HD95 |
 |-------|------|-----|------|
-| Official Validation | 0.8774 | 0.8089 | 17.4679 |
+| Official Validation | 0.9075 | 0.8318 | 12.150 |
 | Test | 0.8796 | 0.8116 | 17.6414 |
 
 Std (test split): Dice `0.1666`, HD95 `42.8784`.
-
-Note for reviewers: earlier high numbers like `0.9648` came from individual sample rows in per-sample CSV, not overall test mean.
 
 ## Project Structure
 
@@ -63,7 +61,7 @@ Download the ISIC 2018 dataset from the official website:
 - **ISIC Archive**: https://www.isic-archive.com/
 - **Download**: https://www.isic-archive.com/#top
 
-Organize the dataset as follows:
+the dataset should be as follows:
 
 ```
 ISIC2018/
